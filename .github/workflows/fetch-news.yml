@@ -66,20 +66,22 @@ jobs:
           print('index.json written with', len(dates), 'dates')
           PY
 
-      - name: Make latest.json (copy today)
+      - name: Make latest.json (copy KST today)
         run: |
           python - <<'PY'
           import os, datetime, shutil
+          KST = datetime.timezone(datetime.timedelta(hours=9))
+          d = datetime.datetime.now(KST).date().isoformat()
           p='docs/data'
           os.makedirs(p, exist_ok=True)
-          d=datetime.date.today().isoformat()
           src=os.path.join(p,f'{d}.json')
           dst=os.path.join(p,'latest.json')
           if os.path.exists(src):
-              shutil.copyfile(src,dst); print('copied to latest.json')
+              shutil.copyfile(src,dst); print('copied to latest.json (KST)', d)
           else:
-              print('today json not found; skip latest')
+              print('KST-today json not found; skip latest:', d)
           PY
+
 
       - name: Commit JSON (safe push)
         run: |
