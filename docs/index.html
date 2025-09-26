@@ -9,14 +9,14 @@
     *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,"Noto Sans KR","맑은 고딕",sans-serif}
     .wrap{max-width:980px;margin:40px auto;padding:0 20px}
     header{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-    h1{margin:0;font-size:24px}
+    h1{margin:0;font-size:22px}
     .controls{display:flex;gap:8px;flex-wrap:wrap}
     .control{background:var(--card);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:10px}
     .btn{cursor:pointer}
     .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
     .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
     .card h3{margin:0 0 6px;font-size:18px}
-    .meta{color:var(--muted);font-size:12px;margin-bottom:8px}
+    .meta{color:var(--muted);font-size:12px;margin-top:4px}
     .cat{display:inline-block;font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;margin-right:8px}
     footer{margin:28px 0 60px;color:var(--muted);font-size:12px;text-align:center}
     @media(min-width:860px){.grid{grid-template-columns:1fr 1fr}}
@@ -31,69 +31,94 @@
         <button id="load" class="control btn">불러오기</button>
       </div>
     </header>
-    <p class="meta">최근 3일 생성된 브리핑을 선택해 조회합니다.</p>
+    <div id="hint" class="meta"></div>
     <section id="list" class="grid"></section>
     <footer>© <span id="y"></span> Reporter PR · Internal</footer>
   </div>
 
-<script>
-const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
-const $date=document.getElementById("date"); const $list=document.getElementById("list");
-const todayKST=new Date(Date.now()+9*3600*1000); $date.value=todayKST.toISOString().slice(0,10);
+  <script>
+  const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
+  const $date=document.getElementById("date"); const $list=document.getElementById("list"); const $hint=document.getElementById("hint");
+  const toKST=(d)=>new Date(d.getTime()+9*3600*1000);
+  const todayStr=toKST(new Date()).toISOString().slice(0,10);
 
-const esc=s=>(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const banner=(msg)=>`<div class="card"><div class="meta">${esc(msg)}</div></div>`;
-function setLoading(url){ $list.innerHTML=`<div class="card"><h3>불러오는 중…</h3><div class="meta">${esc(url||'')}</div></div>`; }
-function render(items=[],note=""){ 
-  if(!Array.isArray(items)){ $list.innerHTML=banner('JSON 형식이 배열이 아님'); return; }
-  if(!items.length){ $list.innerHTML=`<div class="card"><h3>데이터 없음</h3><div class="meta">선택한 날짜의 브리핑이 없습니다.</div></div>${note?banner(note):''}`; return; }
-  const order={"철강경제":1,"포스코그룹":2,"정비 로봇·AI정비":3,"보충":99};
-  items.sort((a,b)=>(order[a.category]||50)-(order[b.category]||50));
-  $list.innerHTML = banner(`${note} · 렌더링 ${items.length}건`) + items.map(it=>`
-    <article class="card">
-      <div><span class="cat">${esc(it.category||'')}</span></div>
-      <h3><a href="${esc(it.url||'#')}" target="_blank" rel="noopener">${esc(it.title||'(제목없음)')}</a></h3>
-      <div class="meta">${esc(it.src||'')} · ${esc(it.ts||'')} ${it.url?`<a href="${esc(it.url)}" target="_blank" rel="noopener">[원문]</a>`:''}</div>
-      <ul>${Array.isArray(it.points)?it.points.map(p=>`<li>${p}</li>`).join(""):''}</ul>
-      <div class="meta">☞ 시사점: ${esc(it.insight||"")}</div>
-    </article>`).join("");
-}
-async function fetchJSON(path){
-  const url=`${path}?v=${Date.now()}`; setLoading(url);
-  const res=await fetch(url); if(!res.ok) throw new Error(`[${res.status}] ${res.statusText} @ ${url}`);
-  return await res.json();
-}
-async function load(dateStr){
-  try{
-    const isToday = dateStr === new Date(Date.now()+9*3600*1000).toISOString().slice(0,10);
-    // 1) 선택 날짜
-    try {
-      const d1=await fetchJSON(`./data/${dateStr}.json`);
-      if(Array.isArray(d1) && d1.length>0) return render(d1, `소스: ${dateStr}.json`);
-      if(!isToday) return render([], `소스: ${dateStr}.json (빈 배열)`);
-    } catch(e1){ if(!isToday) return render([], `소스: ${dateStr}.json (미존재)`); }
-    // 2) (오늘만) 전날
-    if(isToday){
-      const d=new Date(dateStr); d.setDate(d.getDate()-1);
-      const y=d.toISOString().slice(0,10);
-      try{
-        const d2=await fetchJSON(`./data/${y}.json`);
-        if(Array.isArray(d2) && d2.length>0) return render(d2, `소스: ${y}.json (오늘 비어/없음 대체)`);
-      }catch(e2){}
-    }
-    // 3) (오늘만) latest.json
-    if(isToday){
-      try{
-        const latest=await fetchJSON(`./data/latest.json`);
-        if(Array.isArray(latest) && latest.length>0) return render(latest, `소스: latest.json (오늘 대체)`);
-      }catch(e3){}
-    }
-    render([], isToday? '오늘 데이터가 비어/없고 전날·latest도 사용 불가':'선택일 JSON 없음/빈 배열');
-  }catch(err){ $list.innerHTML=banner(String(err)); console.error(err); }
-}
-document.getElementById("load").addEventListener("click",()=>load($date.value));
-load($date.value);
-</script>
+  const esc=s=>(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const banner=(msg)=>`<div class="card"><div class="meta">${esc(msg)}</div></div>`;
+  const setLoading=(url)=>{ $list.innerHTML=`<div class="card"><h3>불러오는 중…</h3><div class="meta">${esc(url||'')}</div></div>`; };
 
+  function render(items=[], note=""){
+    if(!Array.isArray(items)){ $list.innerHTML=banner('JSON 형식이 배열이 아님'); return; }
+    if(!items.length){ $list.innerHTML=`<div class="card"><h3>데이터 없음</h3><div class="meta">선택한 날짜의 브리핑이 없습니다.</div></div>${note?banner(note):''}`; return; }
+    const order={"철강경제":1,"포스코그룹":2,"정비 로봇·AI정비":3,"보충":99};
+    items.sort((a,b)=>(order[a.category]||50)-(order[b.category]||50));
+    $list.innerHTML = (note?banner(note):"") + items.map(it=>`
+      <article class="card">
+        <div><span class="cat">${esc(it.category||'')}</span></div>
+        <h3><a href="${esc(it.url||'#')}" target="_blank" rel="noopener">${esc(it.title||'(제목없음)')}</a></h3>
+        <div class="meta">${esc(it.src||'')} · ${esc(it.ts||'')} ${it.url?`<a href="${esc(it.url)}" target="_blank" rel="noopener">[원문]</a>`:''}</div>
+        <ul>${Array.isArray(it.points)?it.points.map(p=>`<li>${p}</li>`).join(""):''}</ul>
+        <div class="meta">☞ 시사점: ${esc(it.insight||"")}</div>
+      </article>
+    `).join("");
+  }
+
+  async function fetchJSON(path){
+    const url=`${path}?v=${Date.now()}`; setLoading(url);
+    const res=await fetch(url);
+    if(!res.ok) throw new Error(`[${res.status}] ${res.statusText} @ ${url}`);
+    return await res.json();
+  }
+
+  // 오늘(KST)만 폴백: 전날 → latest
+  async function load(dateStr){
+    try{
+      const isToday=(dateStr===todayStr);
+
+      // 1) 선택 날짜
+      try{
+        const d1=await fetchJSON(`./data/${dateStr}.json`);
+        if(Array.isArray(d1) && d1.length>0) return render(d1, `소스: ${dateStr}.json`);
+        if(!isToday) return render([], `소스: ${dateStr}.json (빈 배열)`);
+      }catch(e1){
+        if(!isToday) return render([], `소스: ${dateStr}.json (미존재)`);
+      }
+
+      // 2) (오늘만) 전날
+      if(isToday){
+        const d=new Date(dateStr); d.setDate(d.getDate()-1);
+        const y=d.toISOString().slice(0,10);
+        try{
+          const d2=await fetchJSON(`./data/${y}.json`);
+          if(Array.isArray(d2) && d2.length>0) return render(d2, `소스: ${y}.json (오늘 대체)`);
+        }catch(e2){}
+      }
+
+      // 3) (오늘만) latest
+      if(isToday){
+        try{
+          const l=await fetchJSON(`./data/latest.json`);
+          if(Array.isArray(l) && l.length>0) return render(l, `소스: latest.json (오늘 대체)`);
+        }catch(e3){}
+      }
+
+      render([], isToday? '오늘/전날/최신 모두 사용 불가':'선택일 JSON 없음/빈 배열');
+    }catch(err){
+      console.error(err); $list.innerHTML=banner(String(err));
+    }
+  }
+
+  // 가능한 날짜 안내(index.json)
+  (async ()=>{
+    try{
+      const idx=await fetch(`./data/index.json?v=${Date.now()}`).then(r=>r.json());
+      const dates=Array.isArray(idx.dates)?idx.dates:[];
+      if(dates.length){ $date.value=dates[0]; $hint.textContent='가능한 날짜: '+dates.slice(0,10).join(', ')+(dates.length>10?' ...':''); }
+      else { $date.value=todayStr; $hint.textContent='가능한 날짜 목록을 불러오지 못했습니다.'; }
+    }catch{ $date.value=todayStr; }
+    load($date.value);
+  })();
+
+  document.getElementById("load").addEventListener("click",()=>load($date.value));
+  </script>
 </body>
 </html>
