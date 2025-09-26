@@ -5,6 +5,17 @@ import requests
 from bs4 import BeautifulSoup
 import openai as openai_pkg  # 예외 클래스 참조용
 # ====== 환경설정 ======
+# 상단 import 아래에 추가/수정
+TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
+def resolve_date():
+    if TARGET_DATE:
+        return TARGET_DATE  # YYYY-MM-DD 가정
+    return datetime.date.today().isoformat()
+
+TODAY = resolve_date()
+OUTDIR = os.path.join("docs", "data")
+OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID")
 NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET")
