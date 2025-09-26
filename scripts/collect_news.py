@@ -1,9 +1,23 @@
 # scripts/collect_news.py
 import os, json, datetime, time, re
+# ...
+TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
+
+def resolve_date() -> str:
+    if TARGET_DATE:
+        return TARGET_DATE  # YYYY-MM-DD
+    return datetime.date.today().isoformat()
+
+TODAY = resolve_date()
+OUTDIR = os.path.join("docs", "data")
+os.makedirs(OUTDIR, exist_ok=True)
+OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
+
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
 import openai as openai_pkg  # 예외 클래스 참조용
+
 # ====== 환경설정 ======
 # 상단 import 아래에 추가/수정
 TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
@@ -77,20 +91,22 @@ def dedup_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(k); out.append(it)
     return out
 
-def clamp_recent(items: List[Dict[str, Any]], days: int = 3) -> List[Dict[str, Any]]:
-    # 네이버 pubDate 기준 필터(대략)
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+def clamp_recent(items, days=3):
+    # 타깃 날짜 기준 창(예: TARGET_DATE 당일 포함 최근 3일)
+    target = datetime.datetime.strptime(TODAY, "%Y-%m-%d")
+    start = target - datetime.timedelta(days=2)  # 전전일
+    end   = target + datetime.timedelta(days=1)  # 다음날 00시 미만
     out=[]
     for it in items:
         try:
             # 예: 'Fri, 26 Sep 2025 09:10:00 +0900'
-            dt = it["ts"]
-            dt = datetime.datetime.strptime(dt[:25], "%a, %d %b %Y %H:%M:%S")
+            dt = datetime.datetime.strptime(it["ts"][:25], "%a, %d %b %Y %H:%M:%S")
         except Exception:
-            # 형식 모르면 일단 통과
             out.append(it); continue
-        if dt >= cutoff: out.append(it)
+        if start <= dt < end:
+            out.append(it)
     return out
+
 
 def collect_candidates() -> Dict[str, List[Dict[str, Any]]]:
     if DEMO_MODE:
@@ -221,6 +237,10 @@ def call_openai(prompt: str) -> List[Dict[str, Any]]:
 
 
 def main():
+    if os.path.exists(OUTFILE):
+    print(f"[SKIP] {OUTFILE} already exists")
+    return
+
     # DEMO 모드가 아니고, 키도 없으면 실패
     if not OPENAI_API_KEY and not DEMO_MODE:
         raise RuntimeError("OPENAI_API_KEY is required (or set DEMO_MODE=1)")
@@ -271,4 +291,25 @@ def main():
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Wrote {OUTFILE} ({len(data)} items)")
 if __name__ == "__main__":
+    if not data:
+    print("Empty result → fallback to latest or candidates")
+    latest = os.path.join(OUTDIR, "latest.json")
+    if os.path.exists(latest):
+        try:
+            data = json.load(open(latest, "r", encoding="utf-8"))
+        except Exception:
+            pass
+if not data:
+    for cat, items in provided.items():
+        for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
+            data.append({
+                "category": cat,
+                "title": it["title"],
+                "src": it["src"],
+                "url": it["url"],
+                "ts": str(it["ts"])[:10],
+                "points": ["- (폴백) 기사 원문 참조", "- (폴백) 요약은 추후 제공"],
+                "insight": "☞ (폴백) 최신 링크 카드"
+            })
+
     main()
