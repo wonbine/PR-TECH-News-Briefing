@@ -38,6 +38,20 @@ jobs:
         run: |
           python scripts/collect_news.py
 
+      - name: Make latest.json copy
+        run: |
+          python - <<'PY'
+          import os, datetime, shutil
+          d = datetime.date.today().isoformat()
+          src = os.path.join('docs','data', f'{d}.json')
+          dst = os.path.join('docs','data','latest.json')
+          if os.path.exists(src):
+              shutil.copyfile(src, dst)
+              print('copied to latest.json')
+          else:
+              print('today json not found; skip latest')
+          PY
+
       - name: Commit JSON
         run: |
           git config user.name "github-actions"
