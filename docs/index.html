@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>리포터 피알이 · 뉴스 브리핑</title>
+  <style>
+    :root{--bg:#0b1220;--card:#121a2b;--text:#e8eefc;--muted:#9aa6bd;--line:#1f2a44}
+    *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,"Noto Sans KR","맑은 고딕",sans-serif}
+    .wrap{max-width:980px;margin:40px auto;padding:0 20px}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    h1{margin:0;font-size:24px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    .control{background:var(--card);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:10px}
+    .btn{cursor:pointer}
+    .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+    .card h3{margin:0 0 6px;font-size:18px}
+    .meta{color:var(--muted);font-size:12px;margin-bottom:8px}
+    .cat{display:inline-block;font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;margin-right:8px}
+    footer{margin:28px 0 60px;color:var(--muted);font-size:12px;text-align:center}
+    @media(min-width:860px){.grid{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>리포터 피알이 · 뉴스 브리핑</h1>
+      <div class="controls">
+        <input id="date" class="control" type="date"/>
+        <button id="load" class="control btn">불러오기</button>
+      </div>
+    </header>
+    <p class="meta">최근 3일 생성된 브리핑을 선택해 조회합니다.</p>
+    <section id="list" class="grid"></section>
+    <footer>© <span id="y"></span> Reporter PR · Internal</footer>
+  </div>
+
+  <script>
+    const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
+    const $date=document.getElementById("date"); const $list=document.getElementById("list");
+    const today=new Date(); $date.value=today.toISOString().slice(0,10);
+
+    function esc(s){return s.replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]))}
+    function render(items=[]){
+      $list.innerHTML="";
+      if(!items.length){$list.innerHTML=`<div class="card"><h3>데이터 없음</h3><div class="meta">선택한 날짜의 브리핑이 없습니다.</div></div>`; return;}
+      // 카테고리별 정렬
+      const order={"철강경제":1,"포스코그룹":2,"정비 로봇·AI정비":3,"보충":99};
+      items.sort((a,b)=>(order[a.category]||50)-(order[b.category]||50));
+      items.forEach(it=>{
+        $list.insertAdjacentHTML("beforeend", `
+          <article class="card">
+            <div><span class="cat">${esc(it.category)}</span></div>
+            <h3><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></h3>
+            <div class="meta">${esc(it.src)} · ${esc(it.ts)} <a href="${esc(it.url)}" target="_blank" rel="noopener">[원문]</a></div>
+            <ul>${(it.points||[]).map(p=>`<li>${p}</li>`).join("")}</ul>
+            <div class="meta">☞ 시사점: ${esc(it.insight||"")}</div>
+          </article>
+        `);
+      });
+    }
+    async function load(dateStr){
+      try{
+        const res=await fetch(`./data/${dateStr}.json?nocache=${Date.now()}`);
+        if(!res.ok) throw new Error("no file");
+        const items=await res.json();
+        render(items);
+      }catch(e){ render([]); }
+    }
+    document.getElementById("load").addEventListener("click",()=>load($date.value));
+    load($date.value);
+  </script>
+</body>
+</html>
