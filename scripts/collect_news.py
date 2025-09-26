@@ -13,6 +13,12 @@ OUTDIR = os.path.join("docs", "data")
 os.makedirs(OUTDIR, exist_ok=True)
 OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
 
+# 중복 방지
+if os.path.exists(OUTFILE):
+    print(f"[SKIP] {OUTFILE} already exists")
+    raise SystemExit(0)
+
+
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
@@ -109,45 +115,14 @@ def clamp_recent(items, days=3):
 
 
 def collect_candidates() -> Dict[str, List[Dict[str, Any]]]:
-    if DEMO_MODE:
-        demo = {
-            "철강경제": [
-              {"title":"HRC 가격 반등, 스프레드 확대","url":"https://example.com/a","src":"매일경제","ts":TODAY},
-              {"title":"철광석 약세, 원료탄 혼조","url":"https://example.com/b","src":"한국경제","ts":TODAY},
-              {"title":"전력요금 변수와 후판 마진","url":"https://example.com/c","src":"조선일보","ts":TODAY},
-            ],
-            "포스코그룹": [
-              {"title":"포항/광양 CAPEX 점검","url":"https://example.com/d","src":"중앙일보","ts":TODAY},
-              {"title":"안전·조업 안정화 프로그램","url":"https://example.com/e","src":"동아일보","ts":TODAY},
-              {"title":"포스코인터내셔널 공급망 업데이트","url":"https://example.com/f","src":"전자신문","ts":TODAY},
-            ],
-            "정비 로봇·AI정비": [
-              {"title":"제철소 PdM/CBM PoC 사례","url":"https://example.com/g","src":"로봇신문","ts":TODAY},
-              {"title":"드론·비전검사 도입 ROI","url":"https://example.com/h","src":"산업부 보도","ts":TODAY}
-            ],
-        }
-        return demo
+    # 기존: NAVER 키 없으면 데모 반환  ❌
+    # 수정: NAVER 키 없으면 '빈 후보' 반환  ✅
+    if not (NAVER_ID and NAVER_SECRET):
+        return { "철강경제": [], "포스코그룹": [], "정비 로봇·AI정비": [] }
 
+    # (키가 있으면 원래 네이버 검색 로직 수행)
     result = {k: [] for k in CATEGORIES.keys()}
-    for cat, queries in CATEGORIES.items():
-        bucket=[]
-        for q in queries:
-            try:
-                bucket += naver_search(q, display=7)
-                time.sleep(0.2)
-            except Exception:
-                pass
-        # 최근 3일 + 살아있는 링크만
-        bucket = dedup_keep_order(bucket)
-        bucket = clamp_recent(bucket, days=3)
-        alive=[]
-        for it in bucket:
-            if it.get("url") and is_alive(it["url"]):
-                alive.append(it)
-                if len(alive) >= (3 if cat!="정비 로봇·AI정비" else 2):
-                    # 카테고리별 목표치만 추림(철강경제/포스코그룹 3건, 정비 2건)
-                    break
-        result[cat] = alive
+    ...
     return result
 
 def make_prompt(provided: Dict[str, List[Dict[str, Any]]]) -> str:
@@ -311,5 +286,15 @@ if not data:
                 "points": ["- (폴백) 기사 원문 참조", "- (폴백) 요약은 추후 제공"],
                 "insight": "☞ (폴백) 최신 링크 카드"
             })
+# 기존: not data → latest.json 또는 후보로 채우기  ❌
+# 운영 모드: 그냥 빈 배열 저장(프론트는 '데이터 없음' 표시)  ✅
+# 아래 블록을 주석 처리하세요.
+# if not data:
+#     print("Empty result → fallback to latest or candidates")
+#     ...
+
+# 그대로 저장
+with open(OUTFILE, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
 
     main()
