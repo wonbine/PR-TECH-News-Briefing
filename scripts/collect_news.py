@@ -3,67 +3,105 @@ import os, json, datetime, time, re
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
+from difflib import SequenceMatcher
 
-# ==== 환경 변수 ====
+# ==== 환경변수 ====
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
-NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
-TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()  # YYYY-MM-DD
+TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()  # YYYY-MM-DD, 미지정시 오늘(KST)
 
-def resolve_date() -> str:
-    if TARGET_DATE:
-        return TARGET_DATE
-    return datetime.date.today().isoformat()
+# ==== 날짜/경로 ====
+def today_kst_str():
+    KST = datetime.timezone(datetime.timedelta(hours=9))
+    return datetime.datetime.now(KST).date().isoformat()
 
-TODAY = resolve_date()
+CENTER_DAY = TARGET_DATE if TARGET_DATE else today_kst_str()   # 요약 기준일 (당일·전일·전전일)
 OUTDIR = os.path.join("docs", "data")
 os.makedirs(OUTDIR, exist_ok=True)
-OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
+OUTFILE = os.path.join(OUTDIR, f"{CENTER_DAY}.json")
 
-# 이미 있으면 중복 생성 방지
-if os.path.exists(OUTFILE):
-    print(f"[SKIP] {OUTFILE} already exists")
-    raise SystemExit(0)
-
-CATEGORIES = {
-    "철강경제": [
-        "HRC 가격", "후판 가격", "철근 가격", "철광석 가격", "원료탄",
-        "철강 관세 232", "철강 AD CVD", "탄소 정책 전력요금 철강"
-    ],
-    "포스코그룹": [
-        "포스코 포항", "포스코 광양", "POSCO 홀딩스", "포스코인터내셔널",
-        "포스코퓨처엠", "포스코이앤씨", "포스코 안전 조업", "포스코 CAPEX"
-    ],
-    "정비 로봇·AI정비": [
-        "예지보전 PdM CBM", "설비 정비 로봇", "드론 검사 제철소",
-        "비전 검사 제철소", "디지털 트윈 제철소", "GenAI 정비"
-    ],
+# ==== 카테고리 규칙 ====
+CAT_RULES = {
+    "철강경제": ["HRC","후판","철근","철광석","원료탄","철강","스프레드","관세","232","AD","CVD","전력요금","탄소"],
+    "포스코그룹": ["포스코","POSCO","포항","광양","포스코인터내셔널","포스코퓨처엠","포스코이앤씨","CAPEX","조업","안전","노사","공급망"],
+    "정비 로봇·AI정비": ["정비","보수","PdM","CBM","예지보전","로봇","드론","비전","디지털 트윈","GenAI","Agent","MRO"],
 }
 
-# ==== 유틸 ====
-def naver_search(query: str, display: int = 8) -> List[Dict[str, Any]]:
-    if not (NAVER_ID and NAVER_SECRET):
-        return []
-    url = "https://openapi.naver.com/v1/search/news.json"
-    headers = {"X-Naver-Client-Id": NAVER_ID, "X-Naver-Client-Secret": NAVER_SECRET}
-    params = {"query": query, "display": display, "sort": "date"}
-    r = requests.get(url, headers=headers, params=params, timeout=15)
-    r.raise_for_status()
-    items = r.json().get("items", [])
-    out = []
-    for it in items:
-        link = it.get("originallink") or it.get("link")
-        title = re.sub("<.*?>", "", it.get("title", "")).strip()
-        src = it.get("link","").split("/")[2] if it.get("link") else "언론사"
-        pub = it.get("pubDate", "")  # 예: 'Fri, 26 Sep 2025 09:10:00 +0900'
-        out.append({"title": title, "url": link, "src": src, "ts": pub})
-    return out
+ORDER = ["철강경제","포스코그룹","정비 로봇·AI정비","보충"]
 
-def is_alive(url: str) -> bool:
+# ==== RSS 소스 (네이버 불필요) ====
+RSS_SOURCES = [
+    # 기본지
+    "https://www.mk.co.kr/rss/30100041/",                      # 매경 산업
+    "https://www.hankyung.com/feed/economy",                   # 한경 경제
+    "https://biz.chosun.com/rss",                              # 조선비즈
+    "https://www.joongang.co.kr/section/economy/rss",          # 중앙 경제
+    "https://www.donga.com/news/rss/list/2/",                  # 동아 경제
+    # 보조(정비/로봇/AI/MRO)
+    "https://www.etnews.com/rss/news.xml",                     # 전자신문
+    "http://www.robotnews.net/rss/allArticle.xml",             # 로봇신문
+]
+
+# ==== 유틸 ====
+UA = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+
+def http_get(url: str, timeout=12):
+    return requests.get(url, timeout=timeout, headers=UA, allow_redirects=True)
+
+def strip_html(s: str) -> str:
+    return re.sub("<.*?>", "", s or "").strip()
+
+def hostname(url: str) -> str:
     try:
-        r = requests.get(url, timeout=10, allow_redirects=True, headers={"User-Agent":"Mozilla/5.0"})
-        if r.status_code != 200: return False
-        return bool(BeautifulSoup(r.text, "html.parser").title)
+        return requests.utils.urlparse(url).netloc.replace("www.","")
+    except Exception:
+        return "출처"
+
+def parse_rss(url: str) -> List[Dict[str, Any]]:
+    try:
+        r = http_get(url, timeout=15)
+        if r.status_code != 200:
+            return []
+        soup = BeautifulSoup(r.content, "xml")
+        out = []
+        for it in soup.find_all("item"):
+            t = strip_html(it.title.text if it.title else "")
+            link = (it.link.text if it.link else "") or ""
+            pub = (it.pubDate.text if it.pubDate else "") or ""
+            out.append({"title": t, "url": link, "src": hostname(link) or hostname(url), "ts": pub})
+        return out
+    except Exception:
+        return []
+
+def parse_pub_ts(ts: str):
+    # 다양한 포맷 대비 (날짜만 쓰면 됨)
+    for fmt in ("%a, %d %b %Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(ts[:len(fmt)], fmt)
+        except Exception:
+            continue
+    return None
+
+def in_last_3days(center_day: str, ts: str) -> bool:
+    target = datetime.datetime.strptime(center_day, "%Y-%m-%d")
+    start = target - datetime.timedelta(days=2)  # 전전일 00:00
+    end   = target + datetime.timedelta(days=1)  # +1일 00:00 미만
+    dt = parse_pub_ts(ts)
+    if not dt:
+        # 날짜 파싱 안 되면 일단 포함 (RSS 소스가 가끔 비표준)
+        return True
+    return start <= dt < end
+
+def is_alive_and_title_match(url: str, rss_title: str, thr=0.35) -> bool:
+    try:
+        r = http_get(url, timeout=10)
+        if r.status_code != 200:
+            return False
+        html = BeautifulSoup(r.text, "html.parser")
+        page_title = (html.title.text if html.title else "").strip()
+        if not page_title:
+            return False
+        sim = SequenceMatcher(None, strip_html(rss_title), strip_html(page_title)).ratio()
+        return sim >= thr
     except Exception:
         return False
 
@@ -75,47 +113,51 @@ def dedup_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(k); out.append(it)
     return out
 
-def clamp_recent(items: List[Dict[str, Any]], center: str, days: int = 3) -> List[Dict[str, Any]]:
-    # center(YYYY-MM-DD)를 기준으로 전전일~당일까지(3일 창)
-    target = datetime.datetime.strptime(center, "%Y-%m-%d")
-    start = target - datetime.timedelta(days=2)
-    end   = target + datetime.timedelta(days=1)
-    out=[]
-    for it in items:
-        try:
-            dt = datetime.datetime.strptime((it.get("ts","")[:25]), "%a, %d %b %Y %H:%M:%S")
-        except Exception:
-            out.append(it); continue
-        if start <= dt < end:
-            out.append(it)
-    return out
+def categorize(title: str) -> str:
+    t = title.upper()
+    score = {k:0 for k in CAT_RULES}
+    for cat, kws in CAT_RULES.items():
+        for kw in kws:
+            if kw.upper() in t: score[cat]+=1
+    best = sorted(score.items(), key=lambda x:(-x[1], ORDER.index(x[0])))
+    return best[0][0] if best[0][1]>0 else "보충"
 
-def collect_candidates() -> Dict[str, List[Dict[str, Any]]]:
-    result = {k: [] for k in CATEGORIES.keys()}
-    if not (NAVER_ID and NAVER_SECRET):
-        # 키 없으면 '빈 후보' 반환 (데모 절대 사용 안 함)
-        return result
-    for cat, queries in CATEGORIES.items():
-        bucket=[]
-        for q in queries:
-            try:
-                bucket += naver_search(q, display=8)
-                time.sleep(0.15)
-            except Exception:
-                pass
-        bucket = dedup_keep_order(bucket)
-        bucket = clamp_recent(bucket, TODAY, days=3)
-        alive=[]
-        for it in bucket:
-            if it.get("url") and is_alive(it["url"]):
-                alive.append(it)
-                if len(alive) >= 6:   # 카테고리당 최대 6개 후보만 유지
-                    break
-        result[cat] = alive
-    return result
+# ==== 후보 수집 (RSS만으로도 동작) ====
+def collect_candidates(center_day: str) -> Dict[str, List[Dict[str, Any]]]:
+    bucket=[]
+    for u in RSS_SOURCES:
+        bucket += parse_rss(u)
+        time.sleep(0.1)
+    # 3일 필터 → 중복 제거
+    bucket = [it for it in bucket if in_last_3days(center_day, it.get("ts",""))]
+    bucket = dedup_keep_order(bucket)
 
-def make_prompt(provided: Dict[str, List[Dict[str, Any]]]) -> str:
-    base = r"""
+    # 링크 유효성 + 제목 매칭 검사
+    alive=[]
+    for it in bucket:
+        url = it.get("url","")
+        title = it.get("title","")
+        if not url or not title: continue
+        if is_alive_and_title_match(url, title):
+            alive.append(it)
+        if len(alive) >= 80:  # 과도 방지
+            break
+
+    # 카테고리 분류 + 상한
+    by_cat = {k:[] for k in ORDER}
+    for it in alive:
+        cat = categorize(it["title"])
+        by_cat.setdefault(cat, []).append(it)
+
+    # 상한: 철강경제3 / 포스코3 / 정비2~3 / 보충2
+    cap = {"철강경제":3, "포스코그룹":3, "정비 로봇·AI정비":3, "보충":2}
+    for k in by_cat:
+        by_cat[k] = by_cat[k][:cap.get(k,3)]
+    return by_cat
+
+# ==== 프롬프트 구성 (사용자 제공 사양 그대로) ====
+def build_prompt(center_day: str, provided: Dict[str, List[Dict[str, Any]]]) -> str:
+    base = """
 Search for Korean business/industry news and summarize **from a steel maintenance company’s POV**.
 
 [수집 범위]
@@ -128,7 +170,7 @@ Search for Korean business/industry news and summarize **from a steel maintenanc
 1) **철강경제** 3건: 글로벌/국내 **강재·원료 가격(HRC·후판·철근·철광석·원료탄)**, **스프레드**, **무역·관세(232·AD/CVD)**, **정책**(탄소·전력요금 등). **수치·지표·정책명** 명시.
 2) **포스코그룹** 3건: POSCO홀딩스/포스코/포스코인터내셔널/포스코퓨처엠/포스코이앤씨 등 **실적·CAPEX·조업/안전·노사·공급망**. **포항/광양** 현장 이슈 우선. **경영기획 시사점** 포함.
 3) **정비 로봇·AI정비** 3건(부족시 1~2건): 제철소 **설비정비·정기보수·PdM/CBM·예지보전**, **정비 로봇/드론·비전검사·디지털트윈·GenAI/Agent** 등 **도입·실증·ROI** 사례. 철도/조선/항공 **MRO 벤치마킹** 허용.
-- *부족한 날은 해당 건수만 표기하고 억지로 채우지 말 것.* 필요 시 보충 카테고리(**철강산업 일반**, **제조·사무 AI 혁신**)로 1~2건 보완하되, **철강정비 연관성**을 명확히 설명.
+- *부족한 날은 해당 건수만 표기하고 억지로 채우지 말 것(스팸 방지).* 필요 시 보충 카테고리(**철강산업 일반**, **제조·사무 AI 혁신**)로 1~2건 보완하되, **철강정비 연관성**을 명확히 설명.
 
 [출력 형식(JSON) — 반드시 아래 스키마만!]
 JSON array only. 각 원소 스키마:
@@ -145,48 +187,4 @@ JSON array only. 각 원소 스키마:
 [중요]
 - 아래 "Provided Articles" 목록 **내 기사만 사용**. 목록에 없는 링크·사실은 쓰지 말 것.
 - 카테고리별 **최대 3건**(정비는 2~3건). 부족하면 있는 만큼만.
-- 중복·유사 제목 제거, 수치/정책명은 **굵게** 표시.
-"""
-    lines = ["\nProvided Articles:\n"]
-    for cat, items in provided.items():
-        lines.append(f"## {cat}")
-        for it in items:
-            lines.append(f"- title: {it.get('title')}\n  src: {it.get('src')}\n  url: {it.get('url')}\n  ts: {str(it.get('ts'))[:10]}")
-    tail = "\nOutput JSON only. No prose, no markdown."
-    return base + "\n".join(lines) + tail
-
-def call_openai(prompt: str) -> List[Dict[str, Any]]:
-    if not OPENAI_API_KEY:
-        return []
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        rsp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            messages=[
-                {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
-                {"role":"user","content":prompt}
-            ],
-            max_tokens=1200,
-        )
-        content = rsp.choices[0].message.content.strip()
-        m = re.search(r"```json(.*?)```", content, re.S)
-        if m: content = m.group(1).strip()
-        data = json.loads(content)
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        print("OpenAI error:", e)
-        return []
-
-def main():
-    provided = collect_candidates()      # NAVER 키 없으면 카테고리별 빈 리스트
-    prompt = make_prompt(provided)
-    data: List[Dict[str, Any]] = call_openai(prompt)  # 키/쿼터 없으면 []
-
-    with open(OUTFILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"Wrote {OUTFILE} ({len(data)} items)")
-
-if __name__ == "__main__":
-    main()
+- 중복·유사 제목 제거,
