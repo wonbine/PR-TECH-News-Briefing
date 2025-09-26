@@ -3,7 +3,7 @@ import os, json, datetime, time, re
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
-
+import openai as openai_pkg  # 예외 클래스 참조용
 # ====== 환경설정 ======
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 NAVER_ID = os.environ.get("NAVER_CLIENT_ID")
@@ -167,39 +167,97 @@ JSON array only. 각 원소 스키마:
     return base + "\n".join(lines) + tail
 
 def call_openai(prompt: str) -> List[Dict[str, Any]]:
+    """
+    OpenAI 호출(최대 4회 재시도, 지수백오프).
+    - per-minute rate limit 같은 일시적 429면 재시도
+    - 진짜 'insufficient_quota'면 바로 빈 리스트 반환 → 상위(main)에서 폴백
+    """
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
-    rsp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        messages=[
-            {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
-            {"role":"user","content":prompt}
-        ]
-    )
-    content = rsp.choices[0].message.content.strip()
-    # JSON 안전 파싱
-    m = re.search(r"```json(.*?)```", content, re.S)
-    if m: content = m.group(1).strip()
-    try:
-        data = json.loads(content)
-        if isinstance(data, list): return data
-    except Exception:
-        pass
-    # 실패 시 빈 배열
+
+    for attempt in range(4):
+        try:
+            rsp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.2,
+                messages=[
+                    {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
+                    {"role":"user","content":prompt}
+                ],
+                max_tokens=1200,   # 비용/쿼터 절약
+            )
+            content = rsp.choices[0].message.content.strip()
+
+            # ```json ... ``` 방지
+            m = re.search(r"```json(.*?)```", content, re.S)
+            if m: content = m.group(1).strip()
+
+            data = json.loads(content)
+            return data if isinstance(data, list) else []
+        except openai_pkg.RateLimitError as e:
+            # 쿼터 완전 소진(insufficient_quota)이면 재시도 의미 없음 → 즉시 폴백
+            if "insufficient_quota" in str(e):
+                return []
+            # 그 외 per-minute limit 등은 지수 백오프 후 재시도
+            delay = 5 * (2 ** attempt)
+            time.sleep(delay)
+        except Exception:
+            # 일단 재시도, 마지막 시도 후 빈 리스트
+            delay = 3 * (2 ** attempt)
+            time.sleep(delay)
+
     return []
 
-def main():
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is required")
-    provided = collect_candidates()
-    prompt = make_prompt(provided)
-    data = call_openai(prompt)
 
-    # 파일 저장
+def main():
+    # DEMO 모드가 아니고, 키도 없으면 실패
+    if not OPENAI_API_KEY and not DEMO_MODE:
+        raise RuntimeError("OPENAI_API_KEY is required (or set DEMO_MODE=1)")
+
+    # 이미 오늘자 파일이 있으면 재생성하지 않음(중복 과금 방지)
+    if os.path.exists(OUTFILE):
+        print(f"Skip: {OUTFILE} already exists.")
+        return
+
+    provided = collect_candidates()      # 네이버 API 없으면 DEMO 후보 세트
+    prompt = make_prompt(provided)
+
+    data: List[Dict[str, Any]] = []
+    if DEMO_MODE:
+        # DEMO: 후보 기사 그대로 간단 가공
+        for cat, items in provided.items():
+            for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
+                data.append({
+                    "category": cat,
+                    "title": it["title"],
+                    "src": it["src"],
+                    "url": it["url"],
+                    "ts": str(it["ts"])[:10],
+                    "points": ["- (데모) 핵심 요약 1", "- (데모) 핵심 요약 2"],
+                    "insight": "☞ (데모) 철강정비 관점의 시사점"
+                })
+    else:
+        # 실데이터 호출
+        data = call_openai(prompt)
+
+        # === 폴백: 쿼터 소진/429 등으로 data가 비면, "기사 원문 목록 기반의 최소 카드" 생성 ===
+        if not data:
+            print("OpenAI 호출 실패/쿼터 초과 → 폴백으로 최소 카드 생성")
+            for cat, items in provided.items():
+                for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
+                    data.append({
+                        "category": cat,
+                        "title": it["title"],
+                        "src": it["src"],
+                        "url": it["url"],
+                        "ts": str(it["ts"])[:10],
+                        "points": ["- (폴백) 기사 원문 참조", "- (폴백) 세부 요약은 쿼터 복구 후 제공"],
+                        "insight": "☞ (폴백) 오늘은 링크 카드만 제공됩니다."
+                    })
+
+    os.makedirs(OUTDIR, exist_ok=True)
     with open(OUTFILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Wrote {OUTFILE} ({len(data)} items)")
-
 if __name__ == "__main__":
     main()
