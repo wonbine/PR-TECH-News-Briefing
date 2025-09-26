@@ -36,8 +36,6 @@ jobs:
       - name: Generate last N days (KST-safe)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
-          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           DAYS_BACK: ${{ inputs.days_back }}
         run: |
           python - <<'PY'
