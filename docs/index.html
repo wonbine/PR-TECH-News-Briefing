@@ -36,102 +36,63 @@
     <footer>© <span id="y"></span> Reporter PR · Internal</footer>
   </div>
 
-  <script>
-  // ... 기존 변수들 위/아래 어느 곳에나 OK
-  async function loadAvailableDates(){
-    try{
-      const idx = await fetch(`./data/index.json?v=${Date.now()}`).then(r=>r.json());
-      return Array.isArray(idx.dates) ? idx.dates : [];
-    }catch(e){ return []; }
-  }
-
-  (async ()=>{
-    const dates = await loadAvailableDates();
-    // date input의 value를 가장 최신으로 맞추기
-    if (dates.length){
-      document.getElementById("date").value = dates[0];
-    }
-    // 선택: dates를 화면에 안내
-    const hint = document.createElement('div');
-    hint.className = 'meta';
-    hint.textContent = dates.length ? `가능한 날짜: ${dates.slice(0,10).join(', ')} ...` : '가능한 날짜 목록을 불러오지 못했습니다.';
-    document.querySelector('header').after(hint);
-  })();
-</script>
-
 <script>
-  const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
-  const $date=document.getElementById("date"); const $list=document.getElementById("list");
-  const todayKST = new Date(Date.now() + 9*3600*1000);
-  $date.value = todayKST.toISOString().slice(0,10);
+const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
+const $date=document.getElementById("date"); const $list=document.getElementById("list");
+const todayKST=new Date(Date.now()+9*3600*1000); $date.value=todayKST.toISOString().slice(0,10);
 
-  const esc = s => (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  const setLoading = (url) => { $list.innerHTML = `<div class="card"><h3>불러오는 중…</h3><div class="meta">${esc(url||'')}</div></div>`; };
-  const showError = (msg) => { $list.innerHTML = `<div class="card"><h3>불러오기 실패</h3><div class="meta">${esc(msg)}</div></div>`; };
-  function render(items=[], note=""){
-    if(!items.length){
-      $list.innerHTML = `<div class="card"><h3>데이터 없음</h3><div class="meta">선택한 날짜의 브리핑이 없습니다.</div></div>${note?`<div class="card"><div class="meta">${esc(note)}</div></div>`:''}`;
-      return;
+const esc=s=>(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const banner=(msg)=>`<div class="card"><div class="meta">${esc(msg)}</div></div>`;
+function setLoading(url){ $list.innerHTML=`<div class="card"><h3>불러오는 중…</h3><div class="meta">${esc(url||'')}</div></div>`; }
+function render(items=[],note=""){ 
+  if(!Array.isArray(items)){ $list.innerHTML=banner('JSON 형식이 배열이 아님'); return; }
+  if(!items.length){ $list.innerHTML=`<div class="card"><h3>데이터 없음</h3><div class="meta">선택한 날짜의 브리핑이 없습니다.</div></div>${note?banner(note):''}`; return; }
+  const order={"철강경제":1,"포스코그룹":2,"정비 로봇·AI정비":3,"보충":99};
+  items.sort((a,b)=>(order[a.category]||50)-(order[b.category]||50));
+  $list.innerHTML = banner(`${note} · 렌더링 ${items.length}건`) + items.map(it=>`
+    <article class="card">
+      <div><span class="cat">${esc(it.category||'')}</span></div>
+      <h3><a href="${esc(it.url||'#')}" target="_blank" rel="noopener">${esc(it.title||'(제목없음)')}</a></h3>
+      <div class="meta">${esc(it.src||'')} · ${esc(it.ts||'')} ${it.url?`<a href="${esc(it.url)}" target="_blank" rel="noopener">[원문]</a>`:''}</div>
+      <ul>${Array.isArray(it.points)?it.points.map(p=>`<li>${p}</li>`).join(""):''}</ul>
+      <div class="meta">☞ 시사점: ${esc(it.insight||"")}</div>
+    </article>`).join("");
+}
+async function fetchJSON(path){
+  const url=`${path}?v=${Date.now()}`; setLoading(url);
+  const res=await fetch(url); if(!res.ok) throw new Error(`[${res.status}] ${res.statusText} @ ${url}`);
+  return await res.json();
+}
+async function load(dateStr){
+  try{
+    const isToday = dateStr === new Date(Date.now()+9*3600*1000).toISOString().slice(0,10);
+    // 1) 선택 날짜
+    try {
+      const d1=await fetchJSON(`./data/${dateStr}.json`);
+      if(Array.isArray(d1) && d1.length>0) return render(d1, `소스: ${dateStr}.json`);
+      if(!isToday) return render([], `소스: ${dateStr}.json (빈 배열)`);
+    } catch(e1){ if(!isToday) return render([], `소스: ${dateStr}.json (미존재)`); }
+    // 2) (오늘만) 전날
+    if(isToday){
+      const d=new Date(dateStr); d.setDate(d.getDate()-1);
+      const y=d.toISOString().slice(0,10);
+      try{
+        const d2=await fetchJSON(`./data/${y}.json`);
+        if(Array.isArray(d2) && d2.length>0) return render(d2, `소스: ${y}.json (오늘 비어/없음 대체)`);
+      }catch(e2){}
     }
-    const order={"철강경제":1,"포스코그룹":2,"정비 로봇·AI정비":3,"보충":99};
-    items.sort((a,b)=>(order[a.category]||50)-(order[b.category]||50));
-    $list.innerHTML = (note?`<div class="card"><div class="meta">${esc(note)}</div></div>`:'') + items.map(it=>`
-      <article class="card">
-        <div><span class="cat">${esc(it.category)}</span></div>
-        <h3><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></h3>
-        <div class="meta">${esc(it.src)} · ${esc(it.ts)} <a href="${esc(it.url)}" target="_blank" rel="noopener">[원문]</a></div>
-        <ul>${(it.points||[]).map(p=>`<li>${p}</li>`).join("")}</ul>
-        <div class="meta">☞ 시사점: ${esc(it.insight||"")}</div>
-      </article>
-    `).join("");
-  }
-  async function fetchJSON(path){
-    const url = `${path}?v=${Date.now()}`; setLoading(url);
-    const res = await fetch(url); if(!res.ok) throw new Error(`[${res.status}] ${res.statusText} @ ${url}`);
-    return await res.json();
-  }
-
-  // ✅ 오늘(KST)만 latest로 폴백. 과거 날짜는 폴백하지 않음.
-  async function load(dateStr){
-    try{
-      const isToday = dateStr === new Date(Date.now()+9*3600*1000).toISOString().slice(0,10);
-
-      // 1) 선택한 날짜 파일 시도
-      try {
-        const d1 = await fetchJSON(`./data/${dateStr}.json`);
-        if (Array.isArray(d1) && d1.length>0) return render(d1);
-        if (!isToday) return render([], "선택한 날짜 JSON이 비어 있어 폴백하지 않았습니다.");
-      } catch(e1){
-        if (!isToday) return render([], "선택한 날짜 JSON을 찾지 못했습니다.");
-      }
-
-      // 2) (오늘만) 전날 재시도
-      if (isToday) {
-        const d = new Date(dateStr); d.setDate(d.getDate()-1);
-        const yest = d.toISOString().slice(0,10);
-        try {
-          const d2 = await fetchJSON(`./data/${yest}.json`);
-          if (Array.isArray(d2) && d2.length>0) return render(d2, "오늘자 데이터가 비어/없어 전날 데이터로 대체했습니다.");
-        } catch(e2){}
-      }
-
-      // 3) (오늘만) latest.json 폴백
-      if (isToday) {
-        try {
-          const latest = await fetchJSON(`./data/latest.json`);
-          if (Array.isArray(latest) && latest.length>0) return render(latest, "오늘자 데이터가 비어/없어 최신 데이터로 대체했습니다.");
-        } catch(e3){}
-      }
-
-      // 4) 최종
-      render([]);
-    } catch (err){
-      console.error(err); showError(String(err));
+    // 3) (오늘만) latest.json
+    if(isToday){
+      try{
+        const latest=await fetchJSON(`./data/latest.json`);
+        if(Array.isArray(latest) && latest.length>0) return render(latest, `소스: latest.json (오늘 대체)`);
+      }catch(e3){}
     }
-  }
-
-  document.getElementById("load").addEventListener("click",()=>load($date.value));
-  load($date.value);
+    render([], isToday? '오늘 데이터가 비어/없고 전날·latest도 사용 불가':'선택일 JSON 없음/빈 배열');
+  }catch(err){ $list.innerHTML=banner(String(err)); console.error(err); }
+}
+document.getElementById("load").addEventListener("click",()=>load($date.value));
+load($date.value);
 </script>
 
 </body>
