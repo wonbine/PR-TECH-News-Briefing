@@ -51,6 +51,21 @@ jobs:
           else:
               print('today json not found; skip latest')
           PY
+          
+      - name: Build index.json (available dates)
+        run: |
+          python - <<'PY'
+          import os, json
+          p = 'docs/data'
+          dates = []
+          for fn in os.listdir(p):
+            if fn.endswith('.json') and fn not in ('latest.json',):
+              dates.append(fn.replace('.json',''))
+          dates.sort(reverse=True)
+          with open(os.path.join(p,'index.json'),'w',encoding='utf-8') as f:
+            json.dump({'dates':dates}, f, ensure_ascii=False, indent=2)
+          print('index.json written with', len(dates), 'dates')
+          PY
 
       - name: Commit JSON
         run: |
