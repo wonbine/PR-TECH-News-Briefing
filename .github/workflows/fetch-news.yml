@@ -37,7 +37,6 @@ jobs:
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           DAYS_BACK: ${{ inputs.days_back }}
-          # DEMO_MODE: '1'   # 필요 시 임시 데모
         run: |
           set -e
           N=${DAYS_BACK:-2}
