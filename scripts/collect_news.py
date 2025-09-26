@@ -91,7 +91,9 @@ def in_last_3days(center_day: str, ts: str) -> bool:
         return True
     return start <= dt < end
 
-def is_alive_and_title_match(url: str, rss_title: str, thr=0.35) -> bool:
+# 기존 is_alive_and_title_match 를 아래로 교체
+def is_alive_and_title_match(url: str, rss_title: str, thr=0.20) -> bool:
+    """HTTP 200 + 제목 유사도(0.20↑) or 부분포함 허용 (언론사 접미어 제거)"""
     try:
         r = http_get(url, timeout=10)
         if r.status_code != 200:
@@ -100,10 +102,27 @@ def is_alive_and_title_match(url: str, rss_title: str, thr=0.35) -> bool:
         page_title = (html.title.text if html.title else "").strip()
         if not page_title:
             return False
-        sim = SequenceMatcher(None, strip_html(rss_title), strip_html(page_title)).ratio()
+
+        def norm(s: str) -> str:
+            s = strip_html(s)
+            # 흔한 접미어 제거
+            s = re.sub(r' - [^-]+$', '', s)
+            s = re.sub(r' : [^:]+$', '', s)
+            return s.strip()
+
+        a, b = norm(rss_title), norm(page_title)
+        if not a or not b:
+            return False
+
+        # 부분포함 먼저
+        if a in b or b in a:
+            return True
+
+        sim = SequenceMatcher(None, a, b).ratio()
         return sim >= thr
     except Exception:
         return False
+
 
 def dedup_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen=set(); out=[]
@@ -124,36 +143,47 @@ def categorize(title: str) -> str:
 
 # ==== 후보 수집 (RSS만으로도 동작) ====
 def collect_candidates(center_day: str) -> Dict[str, List[Dict[str, Any]]]:
-    bucket=[]
+    # 1) RSS 긁기
+    raw=[]
     for u in RSS_SOURCES:
-        bucket += parse_rss(u)
-        time.sleep(0.1)
-    # 3일 필터 → 중복 제거
-    bucket = [it for it in bucket if in_last_3days(center_day, it.get("ts",""))]
-    bucket = dedup_keep_order(bucket)
+        raw += parse_rss(u); time.sleep(0.1)
 
-    # 링크 유효성 + 제목 매칭 검사
+    # 2) 3일 필터 + 중복 제거
+    raw = [it for it in raw if in_last_3days(center_day, it.get("ts",""))]
+    raw = dedup_keep_order(raw)
+
+    # 3) 1차 필터: HTTP 200 + 제목 유사
     alive=[]
-    for it in bucket:
-        url = it.get("url","")
-        title = it.get("title","")
+    for it in raw:
+        url = it.get("url",""); title = it.get("title","")
         if not url or not title: continue
-        if is_alive_and_title_match(url, title):
+        if is_alive_and_title_match(url, title, thr=0.20):
             alive.append(it)
-        if len(alive) >= 80:  # 과도 방지
-            break
 
-    # 카테고리 분류 + 상한
+    # 4) 2차 폴백: HTTP 200만(유사도 실패 기사 보강)
+    if len(alive) < 12:
+        for it in raw:
+            if it in alive: continue
+            url = it.get("url","")
+            if url and is_alive_and_title_match(url, it.get("title",""), thr=0.0):
+                alive.append(it)
+            if len(alive) >= 24:
+                break
+
+    # 5) 3차 폴백: HTTP 확인도 실패 시, 원시 RSS 일부라도 사용(최소 표시 보장)
+    if len(alive) < 6:
+        alive = (alive + raw)[:24]
+
+    # 6) 분류 + 상한
     by_cat = {k:[] for k in ORDER}
     for it in alive:
-        cat = categorize(it["title"])
-        by_cat.setdefault(cat, []).append(it)
+        by_cat[categorize(it.get("title",""))].append(it)
 
-    # 상한: 철강경제3 / 포스코3 / 정비2~3 / 보충2
     cap = {"철강경제":3, "포스코그룹":3, "정비 로봇·AI정비":3, "보충":2}
     for k in by_cat:
         by_cat[k] = by_cat[k][:cap.get(k,3)]
     return by_cat
+
 
 # ==== 프롬프트 구성 (사용자 제공 사양 그대로) ====
 def build_prompt(center_day: str, provided: Dict[str, List[Dict[str, Any]]]) -> str:
@@ -226,19 +256,18 @@ def ask_openai(prompt: str) -> List[Dict[str, Any]]:
 
 # ==== 메인 ====
 def main():
-    # 1) 후보 수집(RSS) → 3일 필터 → HTTP 200 & 제목 유사도 확인
     provided = collect_candidates(CENTER_DAY)
-
-    # 2) 프롬프트 구성(요청하신 포맷 그대로)
     prompt = build_prompt(CENTER_DAY, provided)
-
-    # 3) OpenAI 요약 (실패/쿼터시 빈 리스트 반환)
     data = ask_openai(prompt)
 
-    # 4) 최종 저장 (데모/임의 데이터 없음)
+    # ✅ OpenAI가 비워도 최소 카드 보장
+    if not data:
+        data = simple_bullets(provided, CENTER_DAY)
+
     with open(OUTFILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Wrote {OUTFILE} ({len(data)} items)")
+
 
 if __name__ == "__main__":
     main()
