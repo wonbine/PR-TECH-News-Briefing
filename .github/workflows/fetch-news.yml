@@ -2,9 +2,14 @@ name: Fetch News via OpenAI
 
 on:
   workflow_dispatch:
+    inputs:
+      days_back:
+        description: '며칠 전까지 생성 (기본 2=오늘+어제+그제)'
+        required: false
+        type: number
+        default: 2
   schedule:
-    # 매일 08:00 KST 실행 (UTC 기준 23:00 전날)
-    - cron: '0 23 * * *'
+    - cron: '0 23 * * *'   # 매일 08:00 KST (UTC 23:00)
 
 permissions:
   contents: write
@@ -18,59 +23,69 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           python -m pip install openai requests beautifulsoup4
 
-      - name: Run collector
+      - name: Generate last N days
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
-          # DEMO_MODE: '1'  # 네이버 키가 없으면 주석 해제하여 데모 실행
+          DAYS_BACK: ${{ inputs.days_back }}
+          # DEMO_MODE: '1'   # 필요 시 임시 데모
         run: |
-          python scripts/collect_news.py
+          set -e
+          N=${DAYS_BACK:-2}
+          for i in $(seq 0 $N); do
+            D=$(date -u -d "$i day ago" +%F)   # 오늘=0, 어제=1, 그제=2 ...
+            echo ">> Generating $D"
+            TARGET_DATE=$D python scripts/collect_news.py || echo "   (warn) failed $D"
+          done
 
-      - name: Make latest.json copy
-        run: |
-          python - <<'PY'
-          import os, datetime, shutil
-          d = datetime.date.today().isoformat()
-          src = os.path.join('docs','data', f'{d}.json')
-          dst = os.path.join('docs','data','latest.json')
-          if os.path.exists(src):
-              shutil.copyfile(src, dst)
-              print('copied to latest.json')
-          else:
-              print('today json not found; skip latest')
-          PY
-          
       - name: Build index.json (available dates)
         run: |
           python - <<'PY'
           import os, json
-          p = 'docs/data'
-          dates = []
-          for fn in os.listdir(p):
-            if fn.endswith('.json') and fn not in ('latest.json',):
-              dates.append(fn.replace('.json',''))
+          p='docs/data'
+          dates=[fn[:-5] for fn in os.listdir(p) if fn.endswith('.json') and fn not in ('latest.json','index.json')]
           dates.sort(reverse=True)
           with open(os.path.join(p,'index.json'),'w',encoding='utf-8') as f:
             json.dump({'dates':dates}, f, ensure_ascii=False, indent=2)
           print('index.json written with', len(dates), 'dates')
           PY
 
-      - name: Commit JSON
+      - name: Make latest.json (copy today)
+        run: |
+          python - <<'PY'
+          import os, datetime, shutil
+          d=datetime.date.today().isoformat()
+          src=os.path.join('docs','data',f'{d}.json')
+          dst=os.path.join('docs','data','latest.json')
+          if os.path.exists(src):
+              shutil.copyfile(src,dst); print('copied to latest.json')
+          else:
+              print('today json not found; skip latest')
+          PY
+
+      - name: Commit JSON (safe push)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add docs/data/*.json
-          git commit -m "chore: update news data" || echo "no changes"
-          git push
+          git diff --cached --quiet && echo "no changes" && exit 0
+          git fetch origin main
+          git pull --rebase origin main || true
+          set +e
+          for i in 1 2 3; do
+            git commit -m "chore: update news data" && git push origin HEAD:main && exit 0
+            echo "push retry $i..."; sleep 5; git pull --rebase origin main || true
+          done
+          echo "push failed but continuing"
+          set -e
