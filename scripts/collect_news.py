@@ -187,4 +187,58 @@ JSON array only. 각 원소 스키마:
 [중요]
 - 아래 "Provided Articles" 목록 **내 기사만 사용**. 목록에 없는 링크·사실은 쓰지 말 것.
 - 카테고리별 **최대 3건**(정비는 2~3건). 부족하면 있는 만큼만.
-- 중복·유사 제목 제거,
+- 중복·유사 제목 제거, **수치/기관/정책명은 굵게** 표시.
+"""
+    lines = [f"\nProvided Articles (기준일 {center_day}, 최근 3일):\n"]
+    for cat in ORDER:
+        items = provided.get(cat, [])
+        if not items: continue
+        lines.append(f"## {cat}")
+        for it in items:
+            lines.append(f"- title: {it.get('title')}\n  src: {it.get('src')}\n  url: {it.get('url')}\n  ts: {center_day}")
+    tail = "\nOutput JSON only. No prose, no markdown."
+    return base + "\n".join(lines) + tail
+
+# ==== OpenAI 호출 ====
+def ask_openai(prompt: str) -> List[Dict[str, Any]]:
+    if not OPENAI_API_KEY:
+        return []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        rsp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
+                {"role":"user","content":prompt}
+            ],
+            max_tokens=1400,
+        )
+        content = rsp.choices[0].message.content.strip()
+        m = re.search(r"```json(.*?)```", content, re.S)
+        if m: content = m.group(1).strip()
+        data = json.loads(content)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print("OpenAI error:", e)
+        return []
+
+# ==== 메인 ====
+def main():
+    # 1) 후보 수집(RSS) → 3일 필터 → HTTP 200 & 제목 유사도 확인
+    provided = collect_candidates(CENTER_DAY)
+
+    # 2) 프롬프트 구성(요청하신 포맷 그대로)
+    prompt = build_prompt(CENTER_DAY, provided)
+
+    # 3) OpenAI 요약 (실패/쿼터시 빈 리스트 반환)
+    data = ask_openai(prompt)
+
+    # 4) 최종 저장 (데모/임의 데이터 없음)
+    with open(OUTFILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Wrote {OUTFILE} ({len(data)} items)")
+
+if __name__ == "__main__":
+    main()
