@@ -36,6 +36,29 @@
     <footer>© <span id="y"></span> Reporter PR · Internal</footer>
   </div>
 
+  <script>
+  // ... 기존 변수들 위/아래 어느 곳에나 OK
+  async function loadAvailableDates(){
+    try{
+      const idx = await fetch(`./data/index.json?v=${Date.now()}`).then(r=>r.json());
+      return Array.isArray(idx.dates) ? idx.dates : [];
+    }catch(e){ return []; }
+  }
+
+  (async ()=>{
+    const dates = await loadAvailableDates();
+    // date input의 value를 가장 최신으로 맞추기
+    if (dates.length){
+      document.getElementById("date").value = dates[0];
+    }
+    // 선택: dates를 화면에 안내
+    const hint = document.createElement('div');
+    hint.className = 'meta';
+    hint.textContent = dates.length ? `가능한 날짜: ${dates.slice(0,10).join(', ')} ...` : '가능한 날짜 목록을 불러오지 못했습니다.';
+    document.querySelector('header').after(hint);
+  })();
+</script>
+
 <script>
   const $y=document.getElementById("y"); $y.textContent=new Date().getFullYear();
   const $date=document.getElementById("date"); const $list=document.getElementById("list");
