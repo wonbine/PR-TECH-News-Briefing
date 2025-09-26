@@ -1,50 +1,29 @@
 # scripts/collect_news.py
 import os, json, datetime, time, re
-# ...
-TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
-
-def resolve_date() -> str:
-    if TARGET_DATE:
-        return TARGET_DATE  # YYYY-MM-DD
-    return datetime.date.today().isoformat()
-
-TODAY = resolve_date()
-OUTDIR = os.path.join("docs", "data")
-os.makedirs(OUTDIR, exist_ok=True)
-OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
-
-# 중복 방지
-if os.path.exists(OUTFILE):
-    print(f"[SKIP] {OUTFILE} already exists")
-    raise SystemExit(0)
-
-
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
-import openai as openai_pkg  # 예외 클래스 참조용
 
-# ====== 환경설정 ======
-# 상단 import 아래에 추가/수정
-TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()
-def resolve_date():
+# ==== 환경 변수 ====
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+NAVER_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
+NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+TARGET_DATE = os.environ.get("TARGET_DATE", "").strip()  # YYYY-MM-DD
+
+def resolve_date() -> str:
     if TARGET_DATE:
-        return TARGET_DATE  # YYYY-MM-DD 가정
+        return TARGET_DATE
     return datetime.date.today().isoformat()
 
 TODAY = resolve_date()
 OUTDIR = os.path.join("docs", "data")
-OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-NAVER_ID = os.environ.get("NAVER_CLIENT_ID")
-NAVER_SECRET = os.environ.get("NAVER_CLIENT_SECRET")
-DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"  # DEMO용 샘플 데이터 생성
-
-TODAY = datetime.date.today().isoformat()
-OUTDIR = os.path.join("docs", "data")
 os.makedirs(OUTDIR, exist_ok=True)
 OUTFILE = os.path.join(OUTDIR, f"{TODAY}.json")
+
+# 이미 있으면 중복 생성 방지
+if os.path.exists(OUTFILE):
+    print(f"[SKIP] {OUTFILE} already exists")
+    raise SystemExit(0)
 
 CATEGORIES = {
     "철강경제": [
@@ -61,8 +40,8 @@ CATEGORIES = {
     ],
 }
 
-# ====== 유틸 ======
-def naver_search(query: str, display: int = 10) -> List[Dict[str, Any]]:
+# ==== 유틸 ====
+def naver_search(query: str, display: int = 8) -> List[Dict[str, Any]]:
     if not (NAVER_ID and NAVER_SECRET):
         return []
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -76,57 +55,66 @@ def naver_search(query: str, display: int = 10) -> List[Dict[str, Any]]:
         link = it.get("originallink") or it.get("link")
         title = re.sub("<.*?>", "", it.get("title", "")).strip()
         src = it.get("link","").split("/")[2] if it.get("link") else "언론사"
-        pub = it.get("pubDate", "")
+        pub = it.get("pubDate", "")  # 예: 'Fri, 26 Sep 2025 09:10:00 +0900'
         out.append({"title": title, "url": link, "src": src, "ts": pub})
     return out
 
 def is_alive(url: str) -> bool:
     try:
-        r = requests.get(url, timeout=12, allow_redirects=True, headers={"User-Agent":"Mozilla/5.0"})
+        r = requests.get(url, timeout=10, allow_redirects=True, headers={"User-Agent":"Mozilla/5.0"})
         if r.status_code != 200: return False
-        # 간단히 <title> 존재만 확인
         return bool(BeautifulSoup(r.text, "html.parser").title)
     except Exception:
         return False
 
 def dedup_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set(); out=[]
+    seen=set(); out=[]
     for it in items:
-        k = (it.get("title","").strip(), it.get("url","").strip())
+        k=(it.get("title","").strip(), it.get("url","").strip())
         if k in seen: continue
         seen.add(k); out.append(it)
     return out
 
-def clamp_recent(items, days=3):
-    # 타깃 날짜 기준 창(예: TARGET_DATE 당일 포함 최근 3일)
-    target = datetime.datetime.strptime(TODAY, "%Y-%m-%d")
-    start = target - datetime.timedelta(days=2)  # 전전일
-    end   = target + datetime.timedelta(days=1)  # 다음날 00시 미만
+def clamp_recent(items: List[Dict[str, Any]], center: str, days: int = 3) -> List[Dict[str, Any]]:
+    # center(YYYY-MM-DD)를 기준으로 전전일~당일까지(3일 창)
+    target = datetime.datetime.strptime(center, "%Y-%m-%d")
+    start = target - datetime.timedelta(days=2)
+    end   = target + datetime.timedelta(days=1)
     out=[]
     for it in items:
         try:
-            # 예: 'Fri, 26 Sep 2025 09:10:00 +0900'
-            dt = datetime.datetime.strptime(it["ts"][:25], "%a, %d %b %Y %H:%M:%S")
+            dt = datetime.datetime.strptime((it.get("ts","")[:25]), "%a, %d %b %Y %H:%M:%S")
         except Exception:
             out.append(it); continue
         if start <= dt < end:
             out.append(it)
     return out
 
-
 def collect_candidates() -> Dict[str, List[Dict[str, Any]]]:
-    # 기존: NAVER 키 없으면 데모 반환  ❌
-    # 수정: NAVER 키 없으면 '빈 후보' 반환  ✅
-    if not (NAVER_ID and NAVER_SECRET):
-        return { "철강경제": [], "포스코그룹": [], "정비 로봇·AI정비": [] }
-
-    # (키가 있으면 원래 네이버 검색 로직 수행)
     result = {k: [] for k in CATEGORIES.keys()}
-    ...
+    if not (NAVER_ID and NAVER_SECRET):
+        # 키 없으면 '빈 후보' 반환 (데모 절대 사용 안 함)
+        return result
+    for cat, queries in CATEGORIES.items():
+        bucket=[]
+        for q in queries:
+            try:
+                bucket += naver_search(q, display=8)
+                time.sleep(0.15)
+            except Exception:
+                pass
+        bucket = dedup_keep_order(bucket)
+        bucket = clamp_recent(bucket, TODAY, days=3)
+        alive=[]
+        for it in bucket:
+            if it.get("url") and is_alive(it["url"]):
+                alive.append(it)
+                if len(alive) >= 6:   # 카테고리당 최대 6개 후보만 유지
+                    break
+        result[cat] = alive
     return result
 
 def make_prompt(provided: Dict[str, List[Dict[str, Any]]]) -> str:
-    # 원빈님 프롬프트를 "주어진 기사 목록만 사용" 조건으로 보강
     base = r"""
 Search for Korean business/industry news and summarize **from a steel maintenance company’s POV**.
 
@@ -146,7 +134,7 @@ Search for Korean business/industry news and summarize **from a steel maintenanc
 JSON array only. 각 원소 스키마:
 {
   "category": "철강경제|포스코그룹|정비 로봇·AI정비|보충",
-  "title": "굵은 제목 없이 평문 제목",
+  "title": "제목",
   "src": "언론사/기관",
   "url": "원문 링크(HTTP 200)",
   "ts": "YYYY-MM-DD",
@@ -159,7 +147,6 @@ JSON array only. 각 원소 스키마:
 - 카테고리별 **최대 3건**(정비는 2~3건). 부족하면 있는 만큼만.
 - 중복·유사 제목 제거, 수치/정책명은 **굵게** 표시.
 """
-    # 제공 기사 목록 붙이기
     lines = ["\nProvided Articles:\n"]
     for cat, items in provided.items():
         lines.append(f"## {cat}")
@@ -169,132 +156,37 @@ JSON array only. 각 원소 스키마:
     return base + "\n".join(lines) + tail
 
 def call_openai(prompt: str) -> List[Dict[str, Any]]:
-    """
-    OpenAI 호출(최대 4회 재시도, 지수백오프).
-    - per-minute rate limit 같은 일시적 429면 재시도
-    - 진짜 'insufficient_quota'면 바로 빈 리스트 반환 → 상위(main)에서 폴백
-    """
-    from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    for attempt in range(4):
-        try:
-            rsp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.2,
-                messages=[
-                    {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
-                    {"role":"user","content":prompt}
-                ],
-                max_tokens=1200,   # 비용/쿼터 절약
-            )
-            content = rsp.choices[0].message.content.strip()
-
-            # ```json ... ``` 방지
-            m = re.search(r"```json(.*?)```", content, re.S)
-            if m: content = m.group(1).strip()
-
-            data = json.loads(content)
-            return data if isinstance(data, list) else []
-        except openai_pkg.RateLimitError as e:
-            # 쿼터 완전 소진(insufficient_quota)이면 재시도 의미 없음 → 즉시 폴백
-            if "insufficient_quota" in str(e):
-                return []
-            # 그 외 per-minute limit 등은 지수 백오프 후 재시도
-            delay = 5 * (2 ** attempt)
-            time.sleep(delay)
-        except Exception:
-            # 일단 재시도, 마지막 시도 후 빈 리스트
-            delay = 3 * (2 ** attempt)
-            time.sleep(delay)
-
-    return []
-
+    if not OPENAI_API_KEY:
+        return []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        rsp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {"role":"system","content":"You are a rigorous news summarizer for a steel maintenance company. Output strictly valid JSON."},
+                {"role":"user","content":prompt}
+            ],
+            max_tokens=1200,
+        )
+        content = rsp.choices[0].message.content.strip()
+        m = re.search(r"```json(.*?)```", content, re.S)
+        if m: content = m.group(1).strip()
+        data = json.loads(content)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print("OpenAI error:", e)
+        return []
 
 def main():
-    if os.path.exists(OUTFILE):
-    print(f"[SKIP] {OUTFILE} already exists")
-    return
-
-    # DEMO 모드가 아니고, 키도 없으면 실패
-    if not OPENAI_API_KEY and not DEMO_MODE:
-        raise RuntimeError("OPENAI_API_KEY is required (or set DEMO_MODE=1)")
-
-    # 이미 오늘자 파일이 있으면 재생성하지 않음(중복 과금 방지)
-    if os.path.exists(OUTFILE):
-        print(f"Skip: {OUTFILE} already exists.")
-        return
-
-    provided = collect_candidates()      # 네이버 API 없으면 DEMO 후보 세트
+    provided = collect_candidates()      # NAVER 키 없으면 카테고리별 빈 리스트
     prompt = make_prompt(provided)
+    data: List[Dict[str, Any]] = call_openai(prompt)  # 키/쿼터 없으면 []
 
-    data: List[Dict[str, Any]] = []
-    if DEMO_MODE:
-        # DEMO: 후보 기사 그대로 간단 가공
-        for cat, items in provided.items():
-            for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
-                data.append({
-                    "category": cat,
-                    "title": it["title"],
-                    "src": it["src"],
-                    "url": it["url"],
-                    "ts": str(it["ts"])[:10],
-                    "points": ["- (데모) 핵심 요약 1", "- (데모) 핵심 요약 2"],
-                    "insight": "☞ (데모) 철강정비 관점의 시사점"
-                })
-    else:
-        # 실데이터 호출
-        data = call_openai(prompt)
-
-        # === 폴백: 쿼터 소진/429 등으로 data가 비면, "기사 원문 목록 기반의 최소 카드" 생성 ===
-        if not data:
-            print("OpenAI 호출 실패/쿼터 초과 → 폴백으로 최소 카드 생성")
-            for cat, items in provided.items():
-                for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
-                    data.append({
-                        "category": cat,
-                        "title": it["title"],
-                        "src": it["src"],
-                        "url": it["url"],
-                        "ts": str(it["ts"])[:10],
-                        "points": ["- (폴백) 기사 원문 참조", "- (폴백) 세부 요약은 쿼터 복구 후 제공"],
-                        "insight": "☞ (폴백) 오늘은 링크 카드만 제공됩니다."
-                    })
-
-    os.makedirs(OUTDIR, exist_ok=True)
     with open(OUTFILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Wrote {OUTFILE} ({len(data)} items)")
+
 if __name__ == "__main__":
-    if not data:
-    print("Empty result → fallback to latest or candidates")
-    latest = os.path.join(OUTDIR, "latest.json")
-    if os.path.exists(latest):
-        try:
-            data = json.load(open(latest, "r", encoding="utf-8"))
-        except Exception:
-            pass
-if not data:
-    for cat, items in provided.items():
-        for it in items[: (3 if cat != "정비 로봇·AI정비" else 2)]:
-            data.append({
-                "category": cat,
-                "title": it["title"],
-                "src": it["src"],
-                "url": it["url"],
-                "ts": str(it["ts"])[:10],
-                "points": ["- (폴백) 기사 원문 참조", "- (폴백) 요약은 추후 제공"],
-                "insight": "☞ (폴백) 최신 링크 카드"
-            })
-# 기존: not data → latest.json 또는 후보로 채우기  ❌
-# 운영 모드: 그냥 빈 배열 저장(프론트는 '데이터 없음' 표시)  ✅
-# 아래 블록을 주석 처리하세요.
-# if not data:
-#     print("Empty result → fallback to latest or candidates")
-#     ...
-
-# 그대로 저장
-with open(OUTFILE, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-
     main()
